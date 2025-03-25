@@ -1,7 +1,6 @@
 # Flow3 Network Auto Referral
 
 This bot automates the process of creating accounts and using referral codes for the Flow3 Website
-➡️ Link : https://dashboard.flow3.tech?ref=aHNzHBboY
 
 ## Features
 

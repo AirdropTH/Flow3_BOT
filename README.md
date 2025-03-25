@@ -1,19 +1,13 @@
-# Sogni AI Auto Bot
+# Flow3 Network Auto Referral
 
-➡️ Link : https://app.sogni.ai/creator
-
-- Create Account
-- Submit Reff Code **sonpx** get 250 tSOGNI
-- Verify email
-- Join discord to get Testnet Role
-- Generate Images On Web
-- Claim Daily Boost
+This bot automates the process of creating accounts and using referral codes for the Flow3 Website
+➡️ Link : https://dashboard.flow3.tech?ref=aHNzHBboY
 
 ## Features
 
-- Multiple wallet support
-- Proxy support (HTTP/HTTPS/SOCKS)
-- Auto Claim Points every Daily
+- Automatically generates wallet.
+- Uses proxies to avoid IP bans.
+- Logs the created accounts.
 
 ## Prerequisites
 
@@ -25,8 +19,8 @@
 
 1. Clone the repository:
     ```sh
-    git clone https://github.com/sonpx37/SogniAI.git
-    cd SogniAI
+    git clone https://github.com/AirdropTH/Flow3_BOT.git
+    cd Flow3_BOT
     ```
 
 2. Install the required dependencies:
@@ -42,20 +36,21 @@
     socks5://user:pass@host:port
     ```
 
-2. Create a `token.txt` file for multiple wallets:
-    ```
-    xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-    yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
-    ```
-    F12 - Network to find token
-    ![Capture](https://github.com/user-attachments/assets/0d26b747-e121-4468-9383-9401cdcee4de)
+2. Create a `code.txt` file to input your referral code:
     ```sh
-    nano token.txt
+    nano code.txt
     ```
 5. Run the script:
     ```sh
     node index.js
     ```
+6. Output
+
+- The created accounts will be saved in `accounts.txt`.
+
+## Stay Connected
+
+- Channel Telegram : [Telegram](https://t.me/AirdropToolkitHub)
 
 ## Contributing
 
@@ -68,3 +63,10 @@ MIT License
 ## Disclaimer
 
 This bot is for educational purposes only. Use at your own risk and ensure compliance with SogniAI's terms of service.
+
+## Donation
+
+If you would like to support the development of this project, you can make a donation using the following addresses:
+
+- Solana: `4RA5KKiBFUGRaFf1rnParuy1a6EP5PgeuaaHNzHBboYe`
+- EVM: `0xD4f5137D3A5259D6bfccF613750cd5C7ed51cFFc`

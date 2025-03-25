@@ -1,194 +1,352 @@
-const fs = require('fs').promises;
-const axios = require('axios');
-const chalk = require('chalk');
-const { SocksProxyAgent } = require('socks-proxy-agent');
-const { HttpsProxyAgent } = require('https-proxy-agent');
+import { Keypair } from '@solana/web3.js';
+import axios from 'axios';
+import fs from 'fs';
+import readline from 'readline';
+import bs58 from 'bs58';
+import nacl from 'tweetnacl';
+import { HttpsProxyAgent } from 'https-proxy-agent';
+import { SocksProxyAgent } from 'socks-proxy-agent';
+import chalk from 'chalk';
 
-const TOKEN_FILE = 'token.txt';
-const PROXY_FILE = 'proxy.txt';
-const CLAIM_ENDPOINT = 'https://api.sogni.ai/v2/account/reward/claim';
-const REWARD_ENDPOINT = 'https://api.sogni.ai/v2/account/rewards';
-const DAILY_BOOST_ID = '2';
-const CHECK_INTERVAL_MINUTES = 60;
-const CHECK_INTERVAL_MS = CHECK_INTERVAL_MINUTES * 60 * 1000;
-
-function printBanner() {
-  console.log(chalk.cyan('=================================================='));
-  console.log(chalk.cyan('      Auto Claim Daily Bot Sogni Ai    '));
-  console.log(chalk.cyan('=================================================='));
-}
-
-async function loadAccounts() {
-  try {
-    const token = await fs.readFile(TOKEN_FILE, 'utf8');
-    return token.trim().split('\n').map(acc => acc.trim()).filter(acc => acc);
-  } catch (error) {
-    console.error(chalk.red('Error reading token file:', error.message));
-    process.exit(1);
-  }
-}
-
-async function loadProxies() {
-  try {
-    const data = await fs.readFile(PROXY_FILE, 'utf8');
-    const proxyList = data.trim().split('\n').map(proxy => proxy.trim()).filter(proxy => proxy);
-    console.log(chalk.green(`Loaded ${proxyList.length} proxies from ${PROXY_FILE}`));
-    return proxyList;
-  } catch (error) {
-    console.warn(chalk.yellow('No proxies found or error loading proxies:', error.message));
-    return [];
-  }
-}
-
-function createProxyAgent(proxyUrl) {
-  try {
-    if (!proxyUrl) return null;
-    const url = proxyUrl.toLowerCase();
-    if (url.startsWith('socks4://') || url.startsWith('socks5://')) {
-      return new SocksProxyAgent(proxyUrl);
-    } else if (url.startsWith('http://') || url.startsWith('https://')) {
-      return new HttpsProxyAgent(proxyUrl);
-    } else {
-      return new HttpsProxyAgent(`http://${proxyUrl}`);
-    }
-  } catch (error) {
-    console.error(chalk.red(`Error creating proxy agent for ${proxyUrl}: ${error.message}`));
-    return null;
-  }
-}
-
-function createAxiosInstance(proxyUrl = null) {
-  const config = {
-    headers: {
-      'Content-Type': 'application/json',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
-      'Accept': '*/*',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'Connection': 'keep-alive',
-    },
-    timeout: 30000,
-    maxRedirects: 5,
-  };
-
-  let proxyAgent = null;
-  if (proxyUrl) {
-    proxyAgent = createProxyAgent(proxyUrl);
-    if (proxyAgent) {
-      config.httpsAgent = proxyAgent;
-      config.httpAgent = proxyAgent;
-      console.log(chalk.green(`[${new Date().toISOString()}] Successfully created proxy agent for ${proxyUrl}`));
-    } else {
-      console.warn(chalk.yellow(`[${new Date().toISOString()}] Failed to create proxy agent for ${proxyUrl}, using direct connection.`));
-    }
-  } else {
-    console.log(chalk.yellow(`[${new Date().toISOString()}] No proxy provided, using direct connection.`));
-  }
-
-  const instance = axios.create(config);
-
-  instance.interceptors.response.use(
-    response => response,
-    async (error) => {
-      const config = error.config;
-      if (!config || config._retryCount >= (config.maxRetries || 3)) {
-        return Promise.reject(error);
-      }
-      config._retryCount = (config._retryCount || 0) + 1;
-      const delay = 1000 * Math.pow(2, config._retryCount - 1);
-      console.log(chalk.yellow(`Retrying request (${config._retryCount}/3) after ${delay}ms...`));
-      await new Promise(resolve => setTimeout(resolve, delay));
-      return instance(config);
-    }
-  );
-
-  return instance;
-}
-
-async function checkRewardStatus(token, axiosInstance) {
-  try {
-    const response = await axiosInstance.get(REWARD_ENDPOINT, {
-      headers: { 'authorization': token, 'Referer': 'https://app.sogni.ai/' },
-    });
-    if (response.data.status === 'success') {
-      const dailyBoost = response.data.data.rewards.find(r => r.id === DAILY_BOOST_ID);
-      if (dailyBoost?.canClaim === 1) return true;
-      if (dailyBoost?.lastClaimTimestamp && dailyBoost.claimResetFrequencySec) {
-        const nextAvailable = (dailyBoost.lastClaimTimestamp + dailyBoost.claimResetFrequencySec) * 1000;
-        const timeLeft = nextAvailable - Date.now();
-        if (timeLeft > 0) {
-          const hours = Math.floor(timeLeft / (3600 * 1000));
-          const minutes = Math.floor((timeLeft % (3600 * 1000)) / (60 * 1000));
-          console.log(chalk.yellow(`[${new Date().toISOString()}] Next claim in ${hours}h ${minutes}m`));
+function readProxiesFromFile(filename) {
+    try {
+        if (!fs.existsSync(filename)) {
+            console.log(chalk.yellow(`File ${filename} not found. Running without proxies.`));
+            return [];
         }
-      }
+        const data = fs.readFileSync(filename, 'utf8');
+        return data.split('\n').filter(line => line.trim() !== '');
+    } catch (error) {
+        console.error(chalk.red(`Error reading proxies file: ${error.message}`));
+        return [];
     }
-    return false;
-  } catch (error) {
-    console.error(chalk.red(`[${new Date().toISOString()}] Error checking reward: ${error.message}`));
-    if (error.response) {
-      console.error(chalk.red(`Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data)}`));
-    }
-    return false;
-  }
 }
 
-async function claimDailyBoost(token, axiosInstance) {
-  try {
-    const response = await axiosInstance.post(CLAIM_ENDPOINT, { claims: [DAILY_BOOST_ID] }, {
-      headers: { 'authorization': token, 'Referer': 'https://app.sogni.ai/' },
-    });
-    if (response.data.status === 'success') {
-      console.log(chalk.green(`[${new Date().toISOString()}] Daily boost claimed successfully!`));
-      return true;
+function createProxyAgent(proxyString) {
+    try {
+        if (!proxyString || proxyString.trim() === '') return null;
+        
+        if (proxyString.startsWith('http://') || proxyString.startsWith('https://')) {
+            return new HttpsProxyAgent(proxyString);
+        } else if (proxyString.startsWith('socks4://') || proxyString.startsWith('socks5://')) {
+            return new SocksProxyAgent(proxyString);
+        } else {
+            return new HttpsProxyAgent(`http://${proxyString}`);
+        }
+    } catch (error) {
+        console.error(chalk.red(`Error creating proxy agent: ${error.message}`));
+        return null;
     }
-    console.error(chalk.yellow(`[${new Date().toISOString()}] Failed to claim: ${response.data.message || 'Unknown error'}`));
-    return false;
-  } catch (error) {
-    console.error(chalk.red(`[${new Date().toISOString()}] Error claiming boost: ${error.message}`));
-    if (error.response) console.error(chalk.red(`Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data)}`));
-    return false;
-  }
 }
 
-async function checkAndClaim(account, axiosInstance) {
-  try {
-    console.log(chalk.yellow(`\n🔐 Checking account ${account.slice(0, 5)}...`));
-    const isClaimable = await checkRewardStatus(account, axiosInstance);
-    if (isClaimable) {
-      await claimDailyBoost(account, axiosInstance);
-    } else {
-      console.log(chalk.yellow(`[${new Date().toISOString()}] No claim available yet.`));
+function generateSolanaWallet() {
+    const keypair = Keypair.generate();
+    return {
+        publicKey: keypair.publicKey.toString(),
+        privateKey: Buffer.from(keypair.secretKey).toString('base64'),
+        secretKey: keypair.secretKey 
+    };
+}
+
+function saveWalletToFile(wallet) {
+	const data = `Wallet Address : ${wallet.publicKey}\nPrivate Key : ${wallet.privateKey}\n===================================================================\n`;
+	fs.appendFileSync('accounts.txt', data);
+}
+
+function getReferralCode() {
+    try {
+        if (!fs.existsSync('code.txt')) {
+            return "aHNzHBboY"; 
+        }
+        const code = fs.readFileSync('code.txt', 'utf8').trim();
+        return code || "aHNzHBboY";
+    } catch (error) {
+        console.error(chalk.red(`Error reading referral code: ${error.message}`));
+        return "aHNzHBboY";
     }
-  } catch (error) {
-    console.error(chalk.red(`[${new Date().toISOString()}] Error in process: ${error.message}`));
-  }
-  setTimeout(() => checkAndClaim(account, axiosInstance), CHECK_INTERVAL_MS);
+}
+
+const axiosWithProxy = async (url, options = {}, proxyAgent = null) => {
+    const MAX_RETRIES = 10;
+    const DELAY_MS = 2000;
+    const DEFAULT_HEADERS = {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Content-Type": "application/json",
+        "Origin": "https://dashboard.flow3.tech",
+        "Referer": "https://dashboard.flow3.tech/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
+        "Priority": "u=1, i"
+    };
+
+    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    const makeRequest = async (attempt) => {
+        try {
+            const config = {
+                ...options,
+                headers: { ...DEFAULT_HEADERS, ...options.headers },
+                ...(proxyAgent && { httpsAgent: proxyAgent })
+            };
+
+            return await axios(url, config);
+        } catch (error) {
+            console.error(chalk.red(`Axios error (attempt ${attempt + 1}/${MAX_RETRIES}): ${error.message}`));
+            
+            if (error.response?.data) {
+                console.error(chalk.red("Response data:", JSON.stringify(error.response.data, null, 2)));
+            }
+
+            const errorMessage = error.response?.data?.message || error.message;
+            
+            if (attempt === MAX_RETRIES - 1) throw error;
+            
+            if (errorMessage.includes('"captchaToken" is required')) {
+                console.log(chalk.yellow(`Captcha error detected, retrying (${attempt + 1}/${MAX_RETRIES})...`));
+            } else {
+                console.log(chalk.yellow(`Retrying in ${DELAY_MS/1000} seconds... (${attempt + 1}/${MAX_RETRIES})`));
+            }
+
+            await delay(DELAY_MS);
+            return null;
+        }
+    };
+
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        const response = await makeRequest(attempt);
+        if (response) return response;
+    }
+};
+
+async function login(walletAddress, secretKey, proxyAgent) {
+    const message = "Please sign this message to connect your wallet to Flow 3 and verifying your ownership only.";
+    const referralCode = getReferralCode();
+
+    const encoder = new TextEncoder();
+    const messageBytes = encoder.encode(message);
+    const signature = nacl.sign.detached(messageBytes, secretKey);
+    const signatureBase58 = bs58.encode(signature);
+
+    const body = {
+        message,
+        walletAddress,
+        signature: signatureBase58,
+        referralCode
+    };
+
+    const options = {
+        method: "POST",
+        headers: {
+            "content-type": "application/json",
+            "Referer": "https://dashboard.flow3.tech/"
+        },
+        data: body
+    };
+
+    
+    const response = await axiosWithProxy("https://api.flow3.tech/api/v1/user/login", options, proxyAgent);
+
+    const data = response.data;
+
+    if (!data?.data?.accessToken) {
+        throw new Error(`Login failed: ${JSON.stringify(data)}`);
+    }
+
+    return data.data.accessToken; 
+}
+
+async function getDashboard(token, proxyAgent) {
+    const options = {
+        method: "GET",
+        headers: {
+            "authorization": `Bearer ${token}`,
+            "Referer": "https://dashboard.flow3.tech/"
+        }
+    };
+
+    const response = await axiosWithProxy("https://api.flow3.tech/api/v1/dashboard", options, proxyAgent);
+    const data = response.data;
+    
+    if (response.status !== 200) {
+        throw new Error("Failed to retrieve dashboard data");
+    }
+    
+    return data;
+}
+
+async function getDashboardStats(token, proxyAgent) {
+    const options = {
+        method: "GET",
+        headers: {
+            "authorization": `Bearer ${token}`,
+            "Referer": "https://dashboard.flow3.tech/"
+        }
+    };
+
+    const response = await axiosWithProxy("https://api.flow3.tech/api/v1/dashboard/stats", options, proxyAgent);
+    const data = response.data;
+    
+    if (response.status !== 200) {
+        throw new Error("Failed to retrieve dashboard stats");
+    }
+    
+    return data;
+}
+
+async function getUserProfile(token, proxyAgent) {
+    const options = {
+        method: "GET",
+        headers: {
+            "authorization": `Bearer ${token}`,
+            "Referer": "https://dashboard.flow3.tech/"
+        }
+    };
+
+    const response = await axiosWithProxy("https://api.flow3.tech/api/v1/user/profile", options, proxyAgent);
+    const data = response.data;
+    
+    if (response.status !== 200) {
+        throw new Error("Failed to retrieve user profile");
+    }
+    
+    return data;
+}
+
+async function getTasks(token, proxyAgent) {
+    const options = {
+        method: "GET",
+        headers: {
+            "authorization": `Bearer ${token}`,
+            "Referer": "https://dashboard.flow3.tech/"
+        }
+    };
+
+    const response = await axiosWithProxy("https://api.flow3.tech/api/v1/tasks/", options, proxyAgent);
+    const data = response.data;
+    
+    if (!data?.data) {
+        throw new Error("Failed to retrieve task list");
+    }
+    
+    return data.data;
+}
+
+async function completeTask(token, taskId, proxyAgent) {
+    const options = {
+        method: "POST",
+        headers: {
+            "authorization": `Bearer ${token}`,
+            "Referer": "https://dashboard.flow3.tech/"
+        }
+    };
+
+    const response = await axiosWithProxy(`https://api.flow3.tech/api/v1/tasks/${taskId}/complete`, options, proxyAgent);
+    return response.data;
+}
+
+async function dailyCheckIn(token, proxyAgent) {
+    const options = {
+        method: "GET",
+        headers: {
+            "authorization": `Bearer ${token}`,
+            "Referer": "https://dashboard.flow3.tech/"
+        }
+    };
+
+    const response = await axiosWithProxy("https://api.flow3.tech/api/v1/tasks/daily", options, proxyAgent);
+    const data = response.data;
+    
+    if (response.status !== 200) {
+        throw new Error("Daily check-in failed");
+    }
+    
+    return data;
 }
 
 async function main() {
-  printBanner();
-  console.log(chalk.green(`[${new Date().toISOString()}] Starting Daily Boost Claim Bot...`));
-  console.log(chalk.green(`[${new Date().toISOString()}] Checking every ${CHECK_INTERVAL_MINUTES} minutes.`));
+    const proxies = readProxiesFromFile('proxies.txt');
+    console.log(chalk.green(`- Loaded ${proxies.length} proxies -`));
+    console.log(chalk.green(`- Using referral code: ${getReferralCode()} -\n`));
+    
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
 
-  const [accounts, proxies] = await Promise.all([loadAccounts(), loadProxies()]);
-  if (!accounts.length) throw new Error('No tokens found in token.txt');
+    rl.question(chalk.yellow('Enter the number of wallets to create: '), async (walletCount) => {
+        const count = parseInt(walletCount);
 
-  console.log(chalk.green(`📝 Loaded ${accounts.length} accounts`));
-  if (proxies.length) {
-    console.log(chalk.green(`🌐 Loaded ${proxies.length} proxies`));
-  } else { 
-    console.log(chalk.yellow(`🌐 No proxies, running in direct mode`));
-  }
+        if (isNaN(count) || count <= 0) {
+            console.log(chalk.red("Please enter a valid number!"));
+            rl.close();
+            return;
+        }
 
-  accounts.forEach((account, index) => {
-    const proxy = proxies[index % proxies.length] || null;
-    const axiosInstance = createAxiosInstance(proxy);
-    checkAndClaim(account, axiosInstance);
-  });
+        console.log(chalk.white("\n- Starting process -"));
+        
+        for (let i = 0; i < count; i++) {
+            const separator = chalk.gray("-".repeat(70));
+            console.log(`\n${separator}`);
+            console.log(chalk.white(`- Processing wallet ${i + 1}/${count} -`));
+            
+            let proxyAgent = null;
+            if (proxies.length > 0) {
+                const proxyString = proxies[i % proxies.length];
+                proxyAgent = createProxyAgent(proxyString);
+                console.log(chalk.green(`- Using proxy: ${proxyString} -`));
+            }
+
+            const wallet = generateSolanaWallet();
+            saveWalletToFile(wallet);
+            console.log(chalk.white(`=== Wallet created: ${wallet.publicKey} ===`));
+
+            try {
+                const token = await login(wallet.publicKey, wallet.secretKey, proxyAgent);
+
+                const userProfile = await getUserProfile(token, proxyAgent);
+                console.log(chalk.green(`- User profile retrieved: ${userProfile.data.walletAddress} -`));
+
+                await getDashboard(token, proxyAgent);
+                console.log(chalk.white("=== Dashboard data retrieved ==="));
+
+                await getDashboardStats(token, proxyAgent);
+                console.log(chalk.white("=== Dashboard stats retrieved ==="));
+                
+                const checkInResult = await dailyCheckIn(token, proxyAgent);
+                console.log(chalk.green(`- Daily check-in completed: ${checkInResult.message || "OK"} -`));
+
+                console.log(chalk.white("\n- Processing tasks -"));
+                const tasks = await getTasks(token, proxyAgent);
+                let completedTasks = 0;
+                
+                for (const task of tasks) {
+                    console.log(chalk.yellow(`-> Completing task: ${task.title}`));
+                    const result = await completeTask(token, task.taskId, proxyAgent);
+                    if (result.statusCode === 200) {
+                        console.log(chalk.green(`   ✓ Task ${task.title} completed successfully`));
+                        completedTasks++;
+                    } else {
+                        console.log(chalk.red(`   ✗ Failed to complete task ${task.title}: ${result.message || "Unknown error"}`));
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+                
+                console.log(chalk.white(`=== Completed ${completedTasks}/${tasks.length} tasks ===`));
+
+            } catch (error) {
+                console.error(chalk.red(`- Error with wallet ${wallet.publicKey}: ${error.message} -`));
+            }
+        }
+
+        console.log(chalk.white("\n========================================================================="));
+        console.log(chalk.green("                         Process completed!                              "));
+        console.log(chalk.white("========================================================================="));
+        rl.close();
+    });
 }
 
-main().catch(error => {
-  console.error(chalk.red('❌ Critical error:', error.message));
-  setTimeout(main, 60000); // Restart after 1 minute
-});
+// Run the bot
+main();
